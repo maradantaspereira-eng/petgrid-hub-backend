@@ -5,14 +5,12 @@ API REST para gestão de produtos e estoque de um pet shop.
 ## Como executar
 
 1. Crie o ambiente virtual:
-```bash
-python3 -m venv env
-```
+   - **Linux/macOS:** `python3 -m venv env`
+   - **Windows:** `python -m venv env`
 
-2. Ative o ambiente:
-```bash
-source env/bin/activate
-```
+2. Ative o ambiente virtual:
+   - **Linux/macOS:** `source env/bin/activate`
+   - **Windows:** `env\Scripts\activate`
 
 3. Instale as dependências:
 ```bash
