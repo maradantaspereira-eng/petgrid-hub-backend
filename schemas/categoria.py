@@ -1,7 +1,13 @@
-from pydantic import BaseModel, Field
-from typing import Optional
+from typing import List
+
+from pydantic import BaseModel, RootModel
 
 
 class CategoriaSchema(BaseModel):
-    id: Optional[int] = None
+    """Categoria retornada pela API."""
+    id: int
     nome: str
+
+
+class CategoriaListSchema(RootModel[List[CategoriaSchema]]):
+    """Lista de categorias."""

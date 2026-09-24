@@ -1,185 +1,159 @@
 from flask_openapi3 import OpenAPI, Info, Tag
 from flask_cors import CORS
-from database.database import db, init_db
-from model.categoria import Categoria
-from model.produto import Produto
-from schemas.produto import ProdutoSchema, ProdutoViewSchema, ProdutoUpdateSchema
-from schemas.categoria import CategoriaSchema
 from pydantic import BaseModel
 
-info = Info(title="PetGrid Hub API", version="1.0.0")
+from database.database import db, init_db
+from logger import logger
+from model.categoria import Categoria
+from model.produto import Produto
+from schemas.categoria import CategoriaListSchema
+from schemas.produto import (
+    ProdutoSchema, ProdutoUpdateSchema, ProdutoViewSchema, ProdutoListSchema,
+    ProdutoCriadoSchema, ResumoSchema, MensagemSchema, ErroSchema,
+    datas_coerentes, MENSAGEM_DATAS,
+)
+
+info = Info(
+    title="PetGrid Hub API",
+    version="1.0.0",
+    description="API REST para gestão de produtos e controle de estoque de pet shops.",
+)
 app = OpenAPI(__name__, info=info)
 CORS(app)
 
 init_db(app)
 
-produto_tag = Tag(name="Produto", description="Operações com produtos")
-categoria_tag = Tag(name="Categoria", description="Operações com categorias")
-
-
-# --- Categorias ---
-
-@app.get('/categorias', tags=[categoria_tag])
-def get_categorias():
-    """Lista todas as categorias."""
-    categorias = Categoria.query.all()
-    resultado = []
-    for c in categorias:
-        resultado.append({"id": c.id, "nome": c.nome})
-    return resultado, 200
-
-
-# --- Produtos ---
-
-@app.get('/produtos', tags=[produto_tag])
-def get_produtos():
-    """Lista todos os produtos."""
-    produtos = Produto.query.all()
-    resultado = []
-    for p in produtos:
-        cat = Categoria.query.get(p.categoria_id)
-        resultado.append({
-            "id": p.id,
-            "nome": p.nome,
-            "codigo_barras": p.codigo_barras,
-            "marca": p.marca,
-            "categoria_id": p.categoria_id,
-            "categoria_nome": cat.nome if cat else None,
-            "tipo_pet": p.tipo_pet,
-            "unidade_venda": p.unidade_venda,
-            "lote": p.lote,
-            "estoque_atual": p.estoque_atual,
-            "estoque_minimo": p.estoque_minimo,
-            "custo_aquisicao": p.custo_aquisicao,
-            "preco_venda": p.preco_venda,
-            "data_entrada": p.data_entrada,
-            "data_validade": p.data_validade
-        })
-    return resultado, 200
+produto_tag = Tag(name="Produto", description="Cadastro e consulta de produtos do estoque")
+categoria_tag = Tag(name="Categoria", description="Categorias usadas para classificar os produtos")
+resumo_tag = Tag(name="Resumo", description="Indicadores consolidados do estoque")
 
 
 class ProdutoPath(BaseModel):
     id: int
 
 
-@app.get('/produtos/<int:id>', tags=[produto_tag])
-def get_produto(path: ProdutoPath):
-    """Busca um produto pelo ID."""
-    produto = Produto.query.get(path.id)
-    if not produto:
-        return {"erro": "Produto não encontrado"}, 404
-    cat = Categoria.query.get(produto.categoria_id)
+def buscar_produto(produto_id):
+    return db.session.get(Produto, produto_id)
+
+
+# --- Categorias ---
+
+@app.get('/categorias', tags=[categoria_tag],
+         summary="Listar categorias",
+         responses={"200": CategoriaListSchema})
+def get_categorias():
+    """Retorna todas as categorias cadastradas."""
+    categorias = Categoria.query.order_by(Categoria.id).all()
+    return [{"id": c.id, "nome": c.nome} for c in categorias], 200
+
+
+# --- Resumo ---
+
+@app.get('/resumo', tags=[resumo_tag],
+         summary="Obter indicadores do estoque",
+         responses={"200": ResumoSchema})
+def get_resumo():
+    """Calcula no servidor os totais do estoque: produtos, categorias, itens com
+    estoque crítico, produtos vencidos ou a vencer em 30 dias e valor total em estoque."""
+    produtos = Produto.query.all()
     return {
-        "id": produto.id,
-        "nome": produto.nome,
-        "codigo_barras": produto.codigo_barras,
-        "marca": produto.marca,
-        "categoria_id": produto.categoria_id,
-        "categoria_nome": cat.nome if cat else None,
-        "tipo_pet": produto.tipo_pet,
-        "unidade_venda": produto.unidade_venda,
-        "lote": produto.lote,
-        "estoque_atual": produto.estoque_atual,
-        "estoque_minimo": produto.estoque_minimo,
-        "custo_aquisicao": produto.custo_aquisicao,
-        "preco_venda": produto.preco_venda,
-        "data_entrada": produto.data_entrada,
-        "data_validade": produto.data_validade
+        "total_produtos": len(produtos),
+        "total_categorias": Categoria.query.count(),
+        "estoque_critico": sum(1 for p in produtos if p.estoque_critico()),
+        "vencidos": sum(1 for p in produtos if p.status_validade() == "vencido"),
+        "a_vencer": sum(1 for p in produtos if p.status_validade() == "a_vencer"),
+        "valor_estoque": round(sum((p.estoque_atual or 0) * (p.preco_venda or 0) for p in produtos), 2),
     }, 200
 
 
-@app.post('/produtos', tags=[produto_tag])
+# --- Produtos ---
+
+@app.get('/produtos', tags=[produto_tag],
+         summary="Listar produtos",
+         responses={"200": ProdutoListSchema})
+def get_produtos():
+    """Retorna todos os produtos, já com o nome da categoria relacionada e o
+    status de validade (vencido, a_vencer, ok ou sem_validade)."""
+    return [p.to_dict() for p in Produto.query.order_by(Produto.id).all()], 200
+
+
+@app.get('/produtos/<int:id>', tags=[produto_tag],
+         summary="Buscar produto por ID",
+         responses={"200": ProdutoViewSchema, "404": ErroSchema})
+def get_produto(path: ProdutoPath):
+    """Retorna os dados de um produto. Responde 404 se o ID não existir."""
+    produto = buscar_produto(path.id)
+    if not produto:
+        return {"erro": "Produto não encontrado"}, 404
+    return produto.to_dict(), 200
+
+
+@app.post('/produtos', tags=[produto_tag],
+          summary="Cadastrar produto",
+          responses={"201": ProdutoCriadoSchema, "404": ErroSchema})
 def add_produto(body: ProdutoSchema):
-    """Adiciona um novo produto."""
-    categoria = Categoria.query.get(body.categoria_id)
-    if not categoria:
+    """Cadastra um novo produto. `nome` e `categoria_id` são obrigatórios.
+    Responde 404 se a categoria não existir e 422 se algum campo for inválido
+    (datas fora do formato AAAA-MM-DD, validade anterior à entrada, valores negativos)."""
+    if not db.session.get(Categoria, body.categoria_id):
         return {"erro": "Categoria não encontrada"}, 404
 
-    produto = Produto(
-        nome=body.nome,
-        codigo_barras=body.codigo_barras,
-        marca=body.marca,
-        categoria_id=body.categoria_id,
-        tipo_pet=body.tipo_pet,
-        unidade_venda=body.unidade_venda,
-        lote=body.lote,
-        estoque_atual=body.estoque_atual,
-        estoque_minimo=body.estoque_minimo,
-        custo_aquisicao=body.custo_aquisicao,
-        preco_venda=body.preco_venda,
-        data_entrada=body.data_entrada,
-        data_validade=body.data_validade
-    )
+    produto = Produto(**body.model_dump())
     db.session.add(produto)
     db.session.commit()
+    logger.info("Produto criado: id=%s nome=%s", produto.id, produto.nome)
 
     return {"id": produto.id, "mensagem": "Produto adicionado com sucesso"}, 201
 
 
-@app.put('/produtos/<int:id>', tags=[produto_tag])
+@app.put('/produtos/<int:id>', tags=[produto_tag],
+         summary="Atualizar produto",
+         responses={"200": MensagemSchema, "400": ErroSchema, "404": ErroSchema})
 def update_produto(path: ProdutoPath, body: ProdutoUpdateSchema):
-    """Atualiza um produto existente."""
-    produto = Produto.query.get(path.id)
+    """Atualiza parcialmente um produto: apenas os campos enviados são alterados.
+    Responde 404 se o produto ou a categoria informada não existirem e 400 se a
+    validade resultante ficar anterior à data de entrada."""
+    produto = buscar_produto(path.id)
     if not produto:
         return {"erro": "Produto não encontrado"}, 404
 
-    if body.nome is not None:
-        produto.nome = body.nome
-    if body.codigo_barras is not None:
-        produto.codigo_barras = body.codigo_barras
-    if body.marca is not None:
-        produto.marca = body.marca
-    if body.categoria_id is not None:
-        categoria = Categoria.query.get(body.categoria_id)
-        if not categoria:
-            return {"erro": "Categoria não encontrada"}, 404
-        produto.categoria_id = body.categoria_id
-    if body.tipo_pet is not None:
-        produto.tipo_pet = body.tipo_pet
-    if body.unidade_venda is not None:
-        produto.unidade_venda = body.unidade_venda
-    if body.lote is not None:
-        produto.lote = body.lote
-    if body.estoque_atual is not None:
-        produto.estoque_atual = body.estoque_atual
-    if body.estoque_minimo is not None:
-        produto.estoque_minimo = body.estoque_minimo
-    if body.custo_aquisicao is not None:
-        produto.custo_aquisicao = body.custo_aquisicao
-    if body.preco_venda is not None:
-        produto.preco_venda = body.preco_venda
-    if body.data_entrada is not None:
-        produto.data_entrada = body.data_entrada
-    if body.data_validade is not None:
-        produto.data_validade = body.data_validade
+    alteracoes = body.model_dump(exclude_none=True)
+
+    if "categoria_id" in alteracoes and not db.session.get(Categoria, alteracoes["categoria_id"]):
+        return {"erro": "Categoria não encontrada"}, 404
+
+    entrada = alteracoes.get("data_entrada", produto.data_entrada)
+    validade = alteracoes.get("data_validade", produto.data_validade)
+    if not datas_coerentes(entrada, validade):
+        return {"erro": MENSAGEM_DATAS}, 400
+
+    for campo, valor in alteracoes.items():
+        setattr(produto, campo, valor)
 
     db.session.commit()
+    logger.info("Produto atualizado: id=%s campos=%s", produto.id, list(alteracoes))
     return {"mensagem": "Produto atualizado com sucesso"}, 200
 
 
-@app.delete('/produtos/<int:id>', tags=[produto_tag])
+@app.delete('/produtos/<int:id>', tags=[produto_tag],
+            summary="Remover produto",
+            responses={"200": MensagemSchema, "404": ErroSchema})
 def delete_produto(path: ProdutoPath):
-    """Remove um produto."""
-    produto = Produto.query.get(path.id)
+    """Remove um produto. Responde 404 se o ID não existir."""
+    produto = buscar_produto(path.id)
     if not produto:
         return {"erro": "Produto não encontrado"}, 404
     db.session.delete(produto)
     db.session.commit()
+    logger.info("Produto removido: id=%s", path.id)
     return {"mensagem": "Produto removido com sucesso"}, 200
 
 
 # --- Seed de categorias ---
 with app.app_context():
     if Categoria.query.count() == 0:
-        categorias_iniciais = [
-            Categoria(nome="Rações"),
-            Categoria(nome="Petiscos"),
-            Categoria(nome="Higiene"),
-            Categoria(nome="Brinquedos"),
-            Categoria(nome="Medicamentos"),
-            Categoria(nome="Acessórios"),
-        ]
-        db.session.add_all(categorias_iniciais)
+        db.session.add_all([Categoria(nome=nome) for nome in
+                            ("Rações", "Petiscos", "Higiene", "Brinquedos", "Medicamentos", "Acessórios")])
         db.session.commit()
 
 if __name__ == '__main__':
