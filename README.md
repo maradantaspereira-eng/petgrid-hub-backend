@@ -35,6 +35,10 @@ O frontend do projeto está em outro repositório: [petgrid-hub-frontend](https:
    flask run --host 0.0.0.0 --port 5001 --reload
    ```
 
+> **Windows:** use o Prompt de Comando (cmd). No PowerShell, se a ativação do ambiente for bloqueada, rode antes `Set-ExecutionPolicy -Scope Process Bypass`. Se o comando `python` não for encontrado, use `py -m venv env`. Se o firewall perguntar sobre o acesso do Python à rede, é possível permitir ou usar `--host 127.0.0.1` no comando de execução.
+
+As dependências estão com versões fixas no `requirements.txt` (Flask 3.1.3, Flask-Cors 6.0.5, Flask-SQLAlchemy 3.1.1, flask-openapi3 4.3.2 e pydantic 2.13.5) para que a instalação seja reproduzível.
+
 A API estará disponível em `http://localhost:5001` e a documentação interativa (Swagger) em `http://localhost:5001/openapi/swagger`.
 
 O banco `database.db` e as 6 categorias iniciais (Rações, Petiscos, Higiene, Brinquedos, Medicamentos e Acessórios) são criados automaticamente na primeira execução.
