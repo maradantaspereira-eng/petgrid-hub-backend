@@ -117,7 +117,11 @@ def update_produto(path: ProdutoPath, body: ProdutoUpdateSchema):
     if not produto:
         return {"erro": "Produto não encontrado"}, 404
 
-    alteracoes = body.model_dump(exclude_none=True)
+    # Campos enviados vazios limpam o valor; nome e categoria nunca podem ficar nulos
+    alteracoes = body.model_dump(exclude_unset=True)
+    for obrigatorio in ("nome", "categoria_id"):
+        if alteracoes.get(obrigatorio) is None:
+            alteracoes.pop(obrigatorio, None)
 
     if "categoria_id" in alteracoes and not db.session.get(Categoria, alteracoes["categoria_id"]):
         return {"erro": "Categoria não encontrada"}, 404
